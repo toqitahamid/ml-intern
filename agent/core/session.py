@@ -148,6 +148,17 @@ class Session:
         """Switch the active model and update the context window limit."""
         self.config.model_name = model_name
         self.context_manager.model_max_tokens = _get_max_tokens_safe(model_name)
+        # Invalidate any cached claude-code backend client — a new model needs
+        # a fresh ClaudeSDKClient with the new options.
+        client = getattr(self, "_claude_code_client", None)
+        if client is not None:
+            import asyncio as _asyncio
+            try:
+                loop = _asyncio.get_running_loop()
+                loop.create_task(client.disconnect())
+            except RuntimeError:
+                pass
+            self._claude_code_client = None
 
     def effective_effort_for(self, model_name: str) -> str | None:
         """Resolve the effort level to actually send for ``model_name``.

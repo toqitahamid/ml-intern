@@ -29,6 +29,10 @@ class Config(BaseModel):
     yolo_mode: bool = False  # Auto-approve all tool calls without confirmation
     max_iterations: int = 300  # Max LLM calls per agent turn (-1 = unlimited)
 
+    # LLM backend: "litellm" (default, uses API keys) or "claude-code"
+    # (uses Claude Agent SDK + your Claude Code / Max subscription).
+    backend: str = "litellm"
+
     # Permission control parameters
     confirm_cpu_jobs: bool = True
     auto_file_upload: bool = False

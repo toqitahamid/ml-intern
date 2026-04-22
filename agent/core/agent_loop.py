@@ -473,6 +473,16 @@ class Handlers:
         history stays valid) and notifies the frontend that those tools were
         abandoned.
         """
+        # Claude-code backend: reject any pending approval futures.
+        cc_futures: dict = getattr(session, "_cc_approvals", None) or {}
+        for fut in list(cc_futures.values()):
+            if not fut.done():
+                fut.set_result(False)
+        if cc_futures:
+            cc_futures.clear()
+            session.pending_approval = None
+            return
+
         tool_calls = session.pending_approval.get("tool_calls", [])
         for tc in tool_calls:
             tool_name = tc.function.name
@@ -511,6 +521,11 @@ class Handlers:
         Handle user input (like user_input_or_turn in codex.rs:1291)
         Returns the final assistant response content, if any.
         """
+        # Backend dispatch: route to Claude Agent SDK when configured.
+        if getattr(session.config, "backend", "litellm") == "claude-code":
+            from agent.core.claude_code_backend import run_agent_claude_code
+            return await run_agent_claude_code(session, text)
+
         # Clear any stale cancellation flag from a previous run
         session.reset_cancel()
 
@@ -913,6 +928,19 @@ class Handlers:
     @staticmethod
     async def exec_approval(session: Session, approvals: list[dict]) -> None:
         """Handle batch job execution approval"""
+        # Claude-code backend path: resolve futures registered by can_use_tool.
+        cc_futures: dict = getattr(session, "_cc_approvals", None) or {}
+        if cc_futures:
+            handled = False
+            for a in approvals:
+                tcid = a.get("tool_call_id")
+                fut = cc_futures.get(tcid)
+                if fut and not fut.done():
+                    fut.set_result(bool(a.get("approved", False)))
+                    handled = True
+            if handled:
+                return
+
         if not session.pending_approval:
             await session.send_event(
                 Event(

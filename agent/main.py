@@ -50,6 +50,7 @@ litellm.drop_params = True
 # on every error — users don't need it, and our friendly errors cover the case.
 litellm.suppress_debug_info = True
 
+
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
     args = arguments.get("args", {})
@@ -747,9 +748,44 @@ async def _handle_slash_command(
             return None
         normalized = arg.removeprefix("huggingface/")
         session = session_holder[0] if session_holder else None
-        await model_switcher.probe_and_switch_model(
-            normalized, config, session, console, _get_hf_token(),
-        )
+        if arg.startswith("claude-code/"):
+            # Claude Code backend: skip the HF router probe and just commit.
+            if session:
+                session.update_model(arg)
+                if session.config.backend != "claude-code":
+                    session.config.backend = "claude-code"
+                    print("Backend switched to claude-code")
+                print(f"Model switched to {arg}")
+            else:
+                config.model_name = arg
+                config.backend = "claude-code"
+                print(f"Model set to {arg} (session not started yet)")
+        else:
+            await model_switcher.probe_and_switch_model(
+                normalized, config, session, console, _get_hf_token(),
+            )
+            # Falling back to litellm when switching away from claude-code.
+            if session and session.config.backend != "litellm":
+                session.config.backend = "litellm"
+                print("Backend switched to litellm")
+            elif not session and config.backend != "litellm":
+                config.backend = "litellm"
+        return None
+
+    if command == "/backend":
+        if not arg:
+            print(f"Current backend: {config.backend}")
+            print("Available: litellm, claude-code")
+            return None
+        if arg not in ("litellm", "claude-code"):
+            print(f"Unknown backend: {arg}. Use litellm or claude-code.")
+            return None
+        session = session_holder[0] if session_holder else None
+        if session:
+            session.config.backend = arg
+        else:
+            config.backend = arg
+        print(f"Backend set to {arg}")
         return None
 
     if command == "/yolo":
@@ -806,7 +842,7 @@ async def _handle_slash_command(
     return None
 
 
-async def main():
+async def main(backend: str | None = None):
     """Interactive chat with the agent"""
 
     # Clear screen
@@ -847,6 +883,11 @@ async def main():
     # Start agent loop in background
     config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
     config = load_config(config_path)
+
+    if backend:
+        config.backend = backend
+    if config.model_name.startswith("claude-code/") and config.backend == "litellm":
+        config.backend = "claude-code"
 
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
@@ -1031,6 +1072,7 @@ async def headless_main(
     model: str | None = None,
     max_iterations: int | None = None,
     stream: bool = True,
+    backend: str | None = None,
 ) -> None:
     """Run a single prompt headlessly and exit."""
     import logging
@@ -1054,6 +1096,13 @@ async def headless_main(
     if max_iterations is not None:
         config.max_iterations = max_iterations
 
+    if backend:
+        config.backend = backend
+    # Auto-detect: `--model claude-code/...` implies the Claude Code backend.
+    if config.model_name.startswith("claude-code/") and config.backend == "litellm":
+        config.backend = "claude-code"
+
+    print(f"Backend: {config.backend}", file=sys.stderr)
     print(f"Model: {config.model_name}", file=sys.stderr)
     print(f"Max iterations: {config.max_iterations}", file=sys.stderr)
     print(f"Prompt: {prompt}", file=sys.stderr)
@@ -1233,6 +1282,9 @@ def cli():
                         help="Max LLM requests per turn (default: 50, use -1 for unlimited)")
     parser.add_argument("--no-stream", action="store_true",
                         help="Disable token streaming (use non-streaming LLM calls)")
+    parser.add_argument("--backend", default=None, choices=["litellm", "claude-code"],
+                        help="LLM backend. 'claude-code' uses the Claude Agent SDK "
+                             "and bills against your Claude Max subscription.")
     args = parser.parse_args()
 
     try:
@@ -1240,9 +1292,9 @@ def cli():
             max_iter = args.max_iterations
             if max_iter is not None and max_iter < 0:
                 max_iter = 10_000  # effectively unlimited
-            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream))
+            asyncio.run(headless_main(args.prompt, model=args.model, max_iterations=max_iter, stream=not args.no_stream, backend=args.backend))
         else:
-            asyncio.run(main())
+            asyncio.run(main(backend=args.backend))
     except KeyboardInterrupt:
         print("\n\nGoodbye!")
 
