@@ -162,6 +162,14 @@ def _resolve_llm_params(
         # the same way, so we leave it off for now.
         return {"model": model_name}
 
+    if model_name.startswith("moonshot/"):
+        # Direct Moonshot (Kimi) API. LiteLLM picks up MOONSHOT_API_KEY
+        # (and optional MOONSHOT_API_BASE for the China vs international
+        # endpoint) from the environment. Reasoning effort is not
+        # forwarded — Moonshot exposes reasoning via a separate flag we
+        # don't currently expose.
+        return {"model": model_name}
+
     if model_name.startswith("openai/"):
         params = {"model": model_name}
         if reasoning_effort:
