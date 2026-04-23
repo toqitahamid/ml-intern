@@ -864,7 +864,13 @@ async def main(backend: str | None = None):
     except Exception:
         pass
 
-    print_banner(hf_user=hf_user)
+    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
+    config = load_config(config_path)
+    if backend:
+        config.backend = backend
+    if config.model_name.startswith("claude-code/") and config.backend == "litellm":
+        config.backend = "claude-code"
+    print_banner(model=config.model_name, hf_user=hf_user)
 
     # Pre-warm the HF router catalog in the background so /model switches
     # don't block on a network fetch.
@@ -880,15 +886,7 @@ async def main(backend: str | None = None):
     turn_complete_event.set()
     ready_event = asyncio.Event()
 
-    # Start agent loop in background
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
-
-    if backend:
-        config.backend = backend
-    if config.model_name.startswith("claude-code/") and config.backend == "litellm":
-        config.backend = "claude-code"
-
+    # config loaded above for banner; reuse it here.
     # Create tool router with local mode
     tool_router = ToolRouter(config.mcpServers, hf_token=hf_token, local_mode=True)
 

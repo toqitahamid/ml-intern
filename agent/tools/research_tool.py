@@ -218,6 +218,10 @@ def _get_research_model(main_model: str) -> str:
     """Pick a cheaper model for research based on the main model."""
     if "anthropic" in main_model:
         return "bedrock/us.anthropic.claude-sonnet-4-6"
+    # claude-code/* can't go through litellm — fall back to an HF-routed model
+    # which uses HF_TOKEN (already required for ml-intern).
+    if main_model.startswith("claude-code/"):
+        return "huggingface/fireworks-ai/MiniMaxAI/MiniMax-M2.5"
     # For non-Anthropic models (HF router etc.), use the same model
     return main_model
 
@@ -234,14 +238,37 @@ async def research_handler(
     if not session:
         return "No session available for research agent.", False
 
+    user_content = f"Research task: {task}"
+    if context:
+        user_content = f"Context: {context}\n\n{user_content}"
+
+    # When the main agent runs on the claude-code backend, route the sub-agent
+    # through the Claude Agent SDK too so it uses the Max subscription instead
+    # of an API key.
+    if getattr(session.config, "backend", "litellm") == "claude-code":
+        from agent.core.claude_code_backend import run_research_via_claude_code
+
+        async def _log_cc(text: str) -> None:
+            try:
+                await session.send_event(
+                    Event(event_type="tool_log", data={"tool": "research", "log": text})
+                )
+            except Exception:
+                pass
+
+        await _log_cc("Starting research sub-agent (claude-code)...")
+        return await run_research_via_claude_code(
+            session=session,
+            system_prompt=RESEARCH_SYSTEM_PROMPT,
+            user_task=user_content,
+            allowed_tool_names=RESEARCH_TOOL_NAMES,
+            log_cb=_log_cc,
+        )
+
     # Build the sub-agent's messages (independent context)
     messages: list[Message] = [
         Message(role="system", content=RESEARCH_SYSTEM_PROMPT),
     ]
-
-    user_content = f"Research task: {task}"
-    if context:
-        user_content = f"Context: {context}\n\n{user_content}"
     messages.append(Message(role="user", content=user_content))
 
     # Use a cheaper/faster model for research

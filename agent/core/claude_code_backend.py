@@ -73,11 +73,16 @@ def _tool_prefix(tool_name: str) -> str:
     return f"mcp__ml_intern__{tool_name}"
 
 
-def _build_mcp_server(session: Session):
-    """Wrap ml-intern's ToolRouter tools as Claude Agent SDK @tool handlers."""
+def _build_mcp_server(session: Session, tool_names: set[str] | None = None):
+    """Wrap ml-intern's ToolRouter tools as Claude Agent SDK @tool handlers.
+
+    If `tool_names` is provided, only those tools are exposed.
+    """
 
     wrappers = []
     for spec in session.tool_router.tools.values():
+        if tool_names is not None and spec.name not in tool_names:
+            continue
         name = spec.name
         description = spec.description
         schema = spec.parameters or {"type": "object", "properties": {}}
@@ -259,16 +264,14 @@ async def run_agent_claude_code(session: Session, text: str) -> str | None:
             for block in msg.content:
                 if isinstance(block, TextBlock) and block.text:
                     final_text_parts.append(block.text)
-                    if session.stream:
-                        await session.send_event(Event(
-                            event_type="assistant_chunk",
-                            data={"content": block.text},
-                        ))
-                    else:
-                        await session.send_event(Event(
-                            event_type="assistant_message",
-                            data={"content": block.text},
-                        ))
+                    # SDK yields complete messages (no token-level streaming),
+                    # so `assistant_message` is always the right event. Emitting
+                    # `assistant_chunk` without an `assistant_stream_end` leaves
+                    # the CLI renderer stuck on the shimmer.
+                    await session.send_event(Event(
+                        event_type="assistant_message",
+                        data={"content": block.text},
+                    ))
                 elif isinstance(block, ThinkingBlock):
                     # Surface thinking as a log so the UI can show it if desired.
                     await session.send_event(Event(
@@ -360,3 +363,63 @@ async def run_agent_claude_code(session: Session, text: str) -> str | None:
     await session.auto_save_if_needed()
 
     return final_text
+
+
+async def run_research_via_claude_code(
+    session: Session,
+    system_prompt: str,
+    user_task: str,
+    allowed_tool_names: set[str],
+    log_cb=None,
+) -> tuple[str, bool]:
+    """Run the research sub-agent through the Claude Agent SDK.
+
+    Used when the main backend is `claude-code` so the sub-agent doesn't
+    need an API key either. Returns (summary_text, success).
+    """
+    mcp_server = _build_mcp_server(session, tool_names=allowed_tool_names)
+    allowed = [_tool_prefix(n) for n in allowed_tool_names]
+
+    options = ClaudeAgentOptions(
+        model=strip_prefix(session.config.model_name),
+        system_prompt=system_prompt,
+        mcp_servers={"ml_intern": mcp_server},
+        tools=[],
+        allowed_tools=allowed,
+        permission_mode="bypassPermissions",
+        setting_sources=[],
+        max_turns=60,
+        continue_conversation=False,
+    )
+
+    client = ClaudeSDKClient(options=options)
+    await client.connect()
+    try:
+        await client.query(user_task)
+        text_parts: list[str] = []
+        tool_uses = 0
+        async for msg in client.receive_response():
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, TextBlock) and block.text:
+                        text_parts.append(block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        tool_uses += 1
+                        if log_cb:
+                            display_name = block.name.removeprefix("mcp__ml_intern__")
+                            await log_cb(f"▸ {display_name}")
+            elif isinstance(msg, ResultMessage):
+                break
+        summary = "\n".join(text_parts).strip()
+        if log_cb:
+            await log_cb(f"tools:{tool_uses}")
+            await log_cb("Research complete.")
+        return summary or "Research produced no summary.", bool(summary)
+    except Exception as e:
+        logger.exception("claude-code research sub-agent failed")
+        return f"Research agent error: {e}", False
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
