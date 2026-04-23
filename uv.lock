@@ -1013,6 +1013,7 @@ name = "hf-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "boto3" },
     { name = "claude-agent-sdk" },
     { name = "datasets" },
     { name = "fastapi" },
@@ -1053,6 +1054,7 @@ eval = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", specifier = ">=1.35.0" },
     { name = "claude-agent-sdk", specifier = ">=0.1.65" },
     { name = "datasets", specifier = ">=4.4.1" },
     { name = "datasets", marker = "extra == 'eval'", specifier = ">=4.3.0" },
