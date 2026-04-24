@@ -5,101 +5,114 @@
 
 ## Goal
 
-Package ml-intern's ML-research capabilities as a Claude Code plugin so that
-Claude Code sessions gain parity with the standalone `ml-intern` agent for
-Hugging Face ecosystem work, without duplicating Claude Code's native
-infrastructure.
+A self-contained Claude Code plugin that, once installed, turns Claude Code
+into an autonomous ML-research agent matching the behavior of the standalone
+`ml-intern` agent. The user installs one plugin and does not configure or
+install anything else.
 
 ## Non-goals
 
-- Reimplementing ml-intern's agent loop, context compaction, doom-loop detector,
-  or LLM routing inside Claude Code. Claude Code owns these.
-- Porting tools that duplicate Claude Code natives (`local_tools`, `edit_utils`,
-  `plan_tool`).
-- Wrapping the FastAPI backend or session persistence layer.
+- Reimplementing Claude Code infrastructure: agent loop, context compaction,
+  doom-loop detector, LLM routing, subagent dispatch.
+- Delegating to any other plugin (including the official `huggingface-skills`).
+  The plugin is fully self-contained.
+- Supporting remote sandboxes or Hugging Face Jobs. The target user runs ML
+  compute on their own HPC (SLURM/PBS) via Bash/SSH.
 
 ## Approach
 
-**Option A (tools-only plugin), chosen** over B (CLI wrapper) and C (full port).
-A is the only approach that aligns with the plugin extension model: Claude Code
-remains the agent and gains ml-intern's specialized capabilities.
+Port ml-intern's HF and GitHub tools verbatim into a Claude Code plugin as an
+in-process stdio MCP server. Ship `system_prompt_v3.yaml` verbatim as the
+plugin's skill, with only the minimal edits needed for Claude Code and the
+HPC workflow. Drop infrastructure that Claude Code already provides (loop,
+subagent dispatch, file ops, task tracking).
+
+Why this over delegating to `huggingface-skills`: tool names in the system
+prompt match the ported tools 1:1, so no translation layer is needed; the
+plugin has no external plugin dependency; the behavior is a faithful mirror
+of ml-intern rather than a lookalike built from a similar-but-different tool
+surface.
 
 ## Plugin layout
 
 ```
 ml-intern-plugin/
-├── .claude-plugin/plugin.json
-├── skills/ml-intern/SKILL.md
-├── commands/ml-intern.md
-├── mcp/ml_intern_tools.py
+├── .claude-plugin/
+│   └── plugin.json
+├── skills/
+│   └── ml-intern/
+│       └── SKILL.md              # system_prompt_v3 verbatim with minimal edits
+├── commands/
+│   └── ml-intern.md              # /ml-intern force-activates the skill
+├── mcp/
+│   ├── ml_intern_tools.py        # MCP server entrypoint
+│   └── tools/                    # vendored copies of ml-intern tool modules
+│       ├── docs_tools.py
+│       ├── dataset_tools.py
+│       ├── hf_repo_files_tool.py
+│       ├── hf_repo_git_tool.py
+│       ├── papers_tool.py
+│       ├── private_hf_repo_tools.py
+│       ├── github_find_examples.py
+│       ├── github_list_repos.py
+│       ├── github_read_file.py
+│       └── utilities.py
 ├── settings.json
-└── .mcp.json
+└── .mcp.json                     # declares ml_intern_tools + hf-mcp-server
 ```
 
 ## Components
 
-### 1. MCP server — `mcp/ml_intern_tools.py`
+### 1. MCP server — `mcp/ml_intern_tools.py` + `mcp/tools/*`
 
-A stdio MCP server that imports ml-intern's existing tool modules and exposes
-them as MCP tools. No reimplementation; each MCP tool is a thin adapter calling
-the corresponding `agent/tools/*` function.
+A stdio MCP server that imports the vendored tool modules and exposes each
+public tool function as an MCP tool with the same name as in ml-intern
+(`explore_hf_docs`, `fetch_hf_docs`, `find_hf_api`, `hf_inspect_dataset`,
+`hf_repo_files`, `hub_repo_details`, `hf_papers`, private repo tools,
+`github_find_examples`, `github_list_repos`, `github_read_file`).
 
-Tools exposed (all prefixed `ml_` to avoid collision with Claude Code natives):
+Tool names match the system prompt exactly, so no translation between prompt
+and runtime is needed.
 
-| Tool | Source module |
-| --- | --- |
-| `ml_hf_docs_search`, `ml_hf_docs_fetch` | `docs_tools.py` |
-| `ml_hf_dataset_search`, `ml_hf_dataset_info`, `ml_hf_dataset_sample` | `dataset_tools.py` |
-| `ml_hf_repo_files`, `ml_hf_repo_git` | `hf_repo_files_tool.py`, `hf_repo_git_tool.py` |
-| `ml_hf_papers_search` | `papers_tool.py` |
-| `ml_hf_research` | `research_tool.py` |
-| `ml_hf_private_repo_list`, `ml_hf_private_repo_read`, `ml_hf_private_repo_upload` | `private_hf_repo_tools.py` |
-| `ml_hf_jobs_run`, `ml_hf_jobs_status`, `ml_hf_jobs_logs` | `jobs_tool.py` |
-| `ml_sandbox_create`, `ml_sandbox_exec`, `ml_sandbox_close` | `sandbox_tool.py`, `sandbox_client.py` |
-| `ml_github_find_examples`, `ml_github_list_repos`, `ml_github_read_file` | `github_*.py` |
+**Vendoring strategy:** the tool modules are copied into `mcp/tools/` inside
+the plugin — no runtime import from the ml-intern package. Imports inside
+those files are rewritten from `agent.tools.utilities` to `mcp.tools.utilities`
+and from `agent.core.*` to plugin-local equivalents (or inlined). This isolates
+the plugin from ml-intern's package layout changes.
 
-Environment required: `HF_TOKEN`, `GITHUB_TOKEN` (same as ml-intern).
+**Environment required:** `HF_TOKEN`, `GITHUB_TOKEN`. Loaded from the user's
+shell or a `.env` in the plugin directory.
 
 ### 2. Skill — `skills/ml-intern/SKILL.md`
 
-Auto-triggers on ML research tasks. Description includes trigger phrases:
-"train a model", "fine-tune", "HF dataset", "run a job on HF", "find a paper on",
-"ML research", "Hugging Face", "inference endpoint", "sandbox run".
+Contains `agent/prompts/system_prompt_v3.yaml` verbatim with these minimal
+edits only:
 
-Body contains:
-- Condensed persona from `agent/prompts/system_prompt_v3.yaml`: research-first,
-  validate-then-implement, autonomous, zero-error target.
-- **Division of labor rule** — the core of the skill:
-  - Use `ml_hf_*` and `ml_github_*` for HF/ML-specific operations.
-  - Use Claude Code's native Read/Edit/Write/Bash for local files and shell.
-  - Use `TaskCreate` for plan tracking, never a ported plan tool.
-- **Approval etiquette** — call `ml_sandbox_create`, `ml_hf_jobs_run`, and
-  `ml_hf_private_repo_upload` only when necessary; expect a permission prompt.
+| Original line | Edit |
+| --- | --- |
+| `{{ num_tools }}` in opening line | Replaced with the actual tool count of the ported set |
+| `plan_tool` reference | Replaced with `TaskCreate` (one-line mention) |
+| `hf_jobs` section | Replaced with HPC section: "submit via your HPC scheduler (SLURM/PBS) with Bash; export `HF_TOKEN` in the submit script" |
+| `sandbox_create` section | Dropped (user runs on HPC, not a remote sandbox) |
+| "HF_TOKEN auto in job secrets" line | Rewritten for HPC export pattern |
+| `research({...})` JSON call pattern | Rewritten to call Claude Code's `Agent` tool with `subagent_type="general-purpose"` and the same task/context structure |
+
+All other content — research-first workflow, hallucinated-imports warnings,
+dataset-format-by-method table, hardware sizing table, OOM recovery rules,
+pre-flight checklist, autonomous-mode loop, communication style, tool usage
+rules — is preserved word-for-word.
+
+The skill description triggers on: "train a model", "fine-tune", "HF dataset",
+"Hugging Face", "find a paper on", "ML research", "inference", "SFT", "DPO",
+"GRPO", "LoRA".
 
 ### 3. Slash command — `commands/ml-intern.md`
 
-`/ml-intern <prompt>` forces skill activation for the current turn by prepending
-the skill's persona block to the user message. Used when auto-triggering would
-miss (ambiguous prompts, cross-domain tasks).
+`/ml-intern <prompt>` force-activates the skill for the current turn. Handles
+cases where the skill description would not auto-fire (ambiguous or
+cross-domain prompts).
 
-### 4. Permission config — `settings.json`
-
-```json
-{
-  "permissions": {
-    "ask": [
-      "mcp__ml_intern_tools__ml_sandbox_create",
-      "mcp__ml_intern_tools__ml_hf_jobs_run",
-      "mcp__ml_intern_tools__ml_hf_private_repo_upload"
-    ]
-  }
-}
-```
-
-Maps ml-intern's `_needs_approval` set onto Claude Code's native permission
-prompts. Other ported tools auto-run.
-
-### 5. MCP config — `.mcp.json`
+### 4. MCP config — `.mcp.json`
 
 ```json
 {
@@ -121,55 +134,78 @@ prompts. Other ported tools auto-run.
 }
 ```
 
-Second entry copied verbatim from `configs/main_agent_config.json`.
+The `hf-mcp-server` entry is copied from ml-intern's
+`configs/main_agent_config.json`. First-run OAuth handles HF MCP auth.
+
+### 5. Plugin manifest — `.claude-plugin/plugin.json`
+
+Standard manifest: name, version, description, author. No plugin dependencies.
+
+### 6. Permission config — `settings.json`
+
+None of the ported tools are destructive (sandbox/jobs/upload were dropped).
+File retained as a minimal `{"permissions": {}}` for future additions.
 
 ## Data flow
 
 1. User submits an ML task in Claude Code.
-2. Skill auto-activates (description match) or user invokes `/ml-intern`.
-3. Claude Code plans the work and calls tools:
-   - HF/GitHub operations → `ml_*` tools via MCP.
-   - Local file/shell operations → native Read/Edit/Write/Bash.
-   - Progress tracking → TaskCreate.
-4. Expensive or destructive tools (sandbox/jobs/upload) trigger Claude Code's
-   native permission prompt.
-5. Results stream into the conversation; Claude Code's loop continues.
+2. Skill auto-activates (description match) or user runs `/ml-intern`.
+3. Claude Code executes the ported ml-intern workflow:
+   - **Research** → `Agent(subagent_type="general-purpose", ...)` subagent call
+     using `hf_papers`, `explore_hf_docs`, `fetch_hf_docs`, `github_find_examples`,
+     `github_read_file`, `hf_inspect_dataset`.
+   - **Data validation** → `hf_inspect_dataset`, `hub_repo_details`.
+   - **Implementation** → native Read/Edit/Write to produce training scripts.
+   - **Launch** → Bash to submit to the user's HPC scheduler (SLURM/PBS).
+   - **Progress tracking** → TaskCreate.
+4. Results stream into the conversation; Claude Code's loop continues per the
+   autonomous-mode rules preserved in the skill.
 
 ## What is explicitly not ported
 
 | Dropped | Reason |
 | --- | --- |
-| `agent/core/agent_loop.py` | Claude Code has its own loop |
-| `agent/context_manager/` | Claude Code has its own compaction |
-| Doom-loop detector | Claude Code has stop hooks |
-| `local_tools`, `edit_utils` | Superseded by Read/Edit/Write |
-| `plan_tool` | Superseded by TaskCreate |
-| litellm / claude-code-backend | Claude Code handles routing |
-| `backend/` FastAPI | Out of scope for a CC plugin |
+| `agent/core/agent_loop.py`, `context_manager/`, doom-loop detector | Claude Code provides these |
+| `local_tools.py`, `edit_utils.py` | Superseded by Read/Edit/Write |
+| `plan_tool.py` | Superseded by TaskCreate |
+| `research_tool.py` | Superseded by Claude Code's `Agent` dispatch |
+| `jobs_tool.py`, `sandbox_tool.py`, `sandbox_client.py` | User runs ML compute on HPC |
+| litellm, `claude_code_backend.py`, `backend/` FastAPI | Out of scope for a Claude Code plugin |
 
 ## Testing
 
 1. **Smoke test** — `/ml-intern find a small image-classification dataset on HF
-   and show me its schema`. Expected: `ml_hf_dataset_search` + `ml_hf_dataset_info`
-   calls; no errors; persona-shaped response.
-2. **Permission gate test** — `/ml-intern run a CPU job that trains MNIST for 1
-   epoch`. Expected: Claude Code permission prompt before `ml_hf_jobs_run`
-   executes.
-3. **Division-of-labor test** — `/ml-intern read pyproject.toml and summarize
-   dependencies`. Expected: native Read tool, not a ported file-read tool.
-4. **MCP parity test** — confirm `hf-mcp-server` tools appear alongside
-   `ml_intern_tools` in the available-tool list.
+   and show me its schema`. Expected: `hf_inspect_dataset` called; schema
+   returned.
+2. **Research workflow test** — `/ml-intern plan a SFT recipe for small LLMs on
+   a reasoning benchmark`. Expected: `Agent` subagent call; `hf_papers` with
+   citation_graph + read_paper; pre-flight checklist emitted.
+3. **GitHub tool test** — `/ml-intern find TRL SFTTrainer examples on GitHub
+   that use gradient_checkpointing`. Expected: `github_find_examples` call with
+   correctly-shaped query.
+4. **HPC path test** — `/ml-intern write a SLURM submit script for a 7B SFT
+   run`. Expected: no references to `hf_jobs` or sandbox; Bash writes an
+   `sbatch` script.
+5. **Auto-trigger test** — plain "train a 7B Llama with DPO on UltraFeedback"
+   (no slash command) activates the skill.
+6. **HF MCP test** — confirm HF MCP server tools appear and work after
+   first-run OAuth.
+7. **Tool-name parity test** — verify every tool name referenced in the skill
+   body matches an MCP tool exposed by `ml_intern_tools` or `hf-mcp-server`.
 
 ## Open risks
 
-- **Tool import coupling** — `mcp/ml_intern_tools.py` imports from the
-  ml-intern Python package, so the plugin requires ml-intern's runtime deps
-  installed (via `uv sync` in the ml-intern repo, or pip-installable wheel).
-  Mitigation: ship the plugin as a subdirectory inside the ml-intern repo, or
-  publish ml-intern's tool subset as its own PyPI package.
-- **Tool signatures** — ml-intern tools return Python objects; MCP wants JSON.
-  Adapter layer must serialize consistently. Mitigation: use existing
-  `ToolSpec` metadata from `agent/core/tools.py` as the source of truth for
-  schemas.
-- **HF MCP auth** — `huggingface.co/mcp?login` uses OAuth; first-run UX in CC
-  may differ from ml-intern's. Acceptable for v1.
+- **Vendored import rewrites** — `papers_tool.py`, `docs_tools.py`, etc. may
+  import from `agent.core.llm_params`, `agent.core.session`, or other internal
+  modules. Those imports must be audited and either stubbed, inlined, or
+  removed during the port. Mitigation: implementation plan includes an
+  explicit "dependency audit" step per tool module before copying.
+- **HF MCP OAuth first-run** — new users hit an OAuth redirect the first time
+  they use an HF MCP tool. Acceptable for v1.
+- **Skill auto-trigger precision** — too broad triggers annoy non-ML work; too
+  narrow misses real ML tasks. Trigger list above is a starting point,
+  refinable after dogfooding.
+- **Python version and dependencies** — the vendored tools will need
+  `huggingface_hub`, `requests`, and potentially others. The plugin's MCP
+  server runs in a Python environment; the plugin manifest or a bundled
+  `requirements.txt` must make this explicit.
