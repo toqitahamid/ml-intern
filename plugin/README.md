@@ -6,10 +6,60 @@ pre-flight validated training scripts, and HPC-ready submission patterns.
 
 ## Install
 
+Pick one of the three options below depending on how you got the plugin.
+
+### Option A — Local install (you have the ml-intern repo cloned)
+
+From inside a Claude Code session:
+
+```
+/plugin install /absolute/path/to/ml-intern/plugin
+/reload-plugins
+```
+
+Replace `/absolute/path/to/ml-intern/plugin` with the real path on your
+machine — for example `/Users/you/code/ml-intern/plugin`. Claude Code reads
+the plugin directly from disk; edits to the plugin take effect after
+`/reload-plugins`.
+
+### Option B — GitHub install (you or a teammate published the repo)
+
+```
+/plugin install github:toqitahamid/ml-intern --path plugin
+/reload-plugins
+```
+
+Claude Code clones the repo into its plugin cache and points at the
+`plugin/` subdirectory. Use this if you want your team to pull updates with
+a plain `/plugin update ml-intern`.
+
+### Option C — Marketplace install (publicly discoverable)
+
+Not yet published. To publish later, either (1) submit to an existing Claude
+Code marketplace or (2) host a marketplace manifest yourself and add it with
+`/plugin marketplace add <url>`. Once listed, users just run:
+
 ```
 /plugin install ml-intern
 /reload-plugins
 ```
+
+---
+
+After installation, confirm:
+
+```
+/plugin
+```
+
+…should list `ml-intern` with 1 skill, 1 slash command, and 2 MCP servers
+(`ml_intern_tools` + `hf-mcp-server`). Then:
+
+```
+/mcp
+```
+
+…should show all 10 tools under `ml_intern_tools`.
 
 ## Environment setup
 
