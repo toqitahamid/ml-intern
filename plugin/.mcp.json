@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "ml_intern_tools": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "python", "plugin/mcp/ml_intern_tools.py"],
+      "env": {
+        "HF_TOKEN": "${HF_TOKEN}",
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      }
+    },
+    "hf-mcp-server": {
+      "transport": "http",
+      "url": "https://huggingface.co/mcp?login"
+    }
+  }
+}
