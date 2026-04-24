@@ -57,7 +57,10 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agent*"]
+include = ["agent*", "plugin*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
 
 [tool.uv]
 package = true
