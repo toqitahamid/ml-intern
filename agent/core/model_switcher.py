@@ -32,7 +32,7 @@ SUGGESTED_MODELS = [
     {"id": "claude-code/sonnet", "label": "Claude Sonnet (via Claude Max subscription)"},
     {"id": "claude-code/opus", "label": "Claude Opus (via Claude Max subscription)"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
-    {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
+    {"id": "moonshot/kimi-k2.6", "label": "Kimi K2.6  [moonshot.cn direct — needs MOONSHOT_API_KEY]"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
 ]
 
@@ -68,7 +68,13 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith((
+        "anthropic/",
+        "openai/",
+        "moonshot/",
+        "bedrock/",
+        "claude-code/",
+    )):
         return True
 
     from agent.core import hf_router_catalog as cat
@@ -141,7 +147,8 @@ def print_model_listing(config, console) -> None:
     console.print(
         "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
-        "Use 'anthropic/<model>' or 'openai/<model>' for direct API access.[/dim]"
+        "Use 'anthropic/<model>', 'openai/<model>', or 'moonshot/<model>' for direct API access.\n"
+        "Moonshot direct API needs MOONSHOT_API_KEY (and optional MOONSHOT_API_BASE for the cn endpoint).[/dim]"
     )
 
 
