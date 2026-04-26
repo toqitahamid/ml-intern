@@ -139,11 +139,12 @@ def _make_can_use_tool(session: Session):
         await session.send_event(Event(
             event_type="approval_required",
             data={
-                "tool_calls": [{
+                "tools": [{
                     "tool_call_id": approval_id,
                     "tool": real_name,
                     "arguments": tool_input,
                 }],
+                "count": 1,
             },
         ))
         # Mirror litellm backend's pending_approval slot so UIs that key off

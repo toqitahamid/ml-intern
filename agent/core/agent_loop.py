@@ -1340,6 +1340,11 @@ class Handlers:
             repo_id = session.config.session_dataset_repo
             _ = session.save_and_upload_detached(repo_id)
 
+        # Tear down the claude-agent-sdk client + subprocess if one was started.
+        if getattr(session, "_claude_code_client", None) is not None:
+            from agent.core.claude_code_backend import shutdown_client
+            await shutdown_client(session)
+
         session.is_running = False
         await session.send_event(Event(event_type="shutdown"))
         return True
