@@ -24,8 +24,11 @@ from agent.core.effort_probe import ProbeInconclusive, probe_effort
 # ":cheapest" / ":preferred" / ":<provider>" to override the default
 # routing policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
-    {"id": "bedrock/us.anthropic.claude-opus-4-7", "label": "Claude Opus 4.7"},
-    {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6"},
+    {"id": "openai/gpt-5.5", "label": "GPT-5.5"},
+    {"id": "openai/gpt-5.4", "label": "GPT-5.4"},
+    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
+    {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
+    {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6 via Bedrock"},
     {"id": "claude-code/sonnet", "label": "Claude Sonnet (via Claude Max subscription)"},
     {"id": "claude-code/opus", "label": "Claude Opus (via Claude Max subscription)"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},

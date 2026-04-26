@@ -50,6 +50,15 @@ litellm.drop_params = True
 # on every error — users don't need it, and our friendly errors cover the case.
 litellm.suppress_debug_info = True
 
+CLI_CONFIG_PATH = Path(__file__).parent.parent / "configs" / "cli_agent_config.json"
+
+
+def _configure_runtime_logging() -> None:
+    """Keep third-party warning spam from punching through the interactive UI."""
+    import logging
+
+    logging.getLogger("LiteLLM").setLevel(logging.ERROR)
+    logging.getLogger("litellm").setLevel(logging.ERROR)
 
 def _safe_get_args(arguments: dict) -> dict:
     """Safely extract args dict from arguments, handling cases where LLM passes string."""
@@ -807,8 +816,9 @@ async def _handle_slash_command(
                     console.print(f"  [dim]{m}: {eff or 'off'}[/dim]")
             console.print(
                 "[dim]Set with '/effort minimal|low|medium|high|xhigh|max|off'. "
-                "'max' and 'xhigh' are Anthropic-only; the cascade falls back "
-                "to whatever the model actually accepts.[/dim]"
+                "'max' is Anthropic-only; 'xhigh' is also supported by current "
+                "OpenAI GPT-5 models. The cascade falls back to whatever the "
+                "model actually accepts.[/dim]"
             )
             return None
         level = arg.lower()
@@ -856,6 +866,8 @@ async def main(backend: str | None = None):
     if not hf_token:
         hf_token = await _prompt_and_save_hf_token(prompt_session)
 
+    config = load_config(CLI_CONFIG_PATH)
+
     # Resolve username for banner
     hf_user = None
     try:
@@ -864,12 +876,11 @@ async def main(backend: str | None = None):
     except Exception:
         pass
 
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
     if backend:
         config.backend = backend
     if config.model_name.startswith("claude-code/") and config.backend == "litellm":
         config.backend = "claude-code"
+
     print_banner(model=config.model_name, hf_user=hf_user)
 
     # Pre-warm the HF router catalog in the background so /model switches
@@ -1076,6 +1087,7 @@ async def headless_main(
     import logging
 
     logging.basicConfig(level=logging.WARNING)
+    _configure_runtime_logging()
 
     hf_token = _get_hf_token()
     if not hf_token:
@@ -1084,8 +1096,7 @@ async def headless_main(
 
     print(f"HF token loaded", file=sys.stderr)
 
-    config_path = Path(__file__).parent.parent / "configs" / "main_agent_config.json"
-    config = load_config(config_path)
+    config = load_config(CLI_CONFIG_PATH)
     config.yolo_mode = True  # Auto-approve everything in headless mode
 
     if model:
@@ -1268,6 +1279,7 @@ def cli():
     import warnings
     # Suppress aiohttp "Unclosed client session" noise during event loop teardown
     _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
+    _configure_runtime_logging()
     # Suppress litellm pydantic deprecation warnings
     warnings.filterwarnings("ignore", category=DeprecationWarning, module="litellm")
     # Suppress whoosh invalid escape sequence warnings (third-party, unfixed upstream)
