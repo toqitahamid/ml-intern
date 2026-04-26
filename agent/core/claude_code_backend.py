@@ -14,11 +14,18 @@ Design:
     CLI/backend renderers keep working.
 
 Trade-offs:
-  - No approval flow yet (yolo only). The SDK can do it via `can_use_tool`;
-    wire that in a follow-up.
-  - No doom-loop detector; the SDK has its own termination heuristics.
+  - Approval flow is wired through the SDK's `can_use_tool` callback:
+    tools matching ml-intern's `_needs_approval` rules emit an
+    `approval_required` event (same `{"tools": [...], "count": N}` payload
+    as the litellm path) and block on a per-call future until
+    `Handlers.exec_approval` resolves it.
+  - Per-turn doom-loop guard: identical (tool, args) calls repeated
+    `_DOOM_LOOP_THRESHOLD` times in one turn trigger `client.interrupt()`.
+    Simpler than the litellm cross-turn detector but catches the common
+    spam case.
   - ml-intern's ContextManager still stores the conversation for save/upload,
-    but the SDK owns the live message history sent to the model.
+    but the SDK owns the live message history sent to the model, so
+    auto-compaction is bypassed on this path.
 """
 
 from __future__ import annotations
