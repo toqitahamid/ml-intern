@@ -32,7 +32,7 @@ SUGGESTED_MODELS = [
     {"id": "claude-code/sonnet", "label": "Claude Sonnet (via Claude Max subscription)"},
     {"id": "claude-code/opus", "label": "Claude Opus (via Claude Max subscription)"},
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
-    {"id": "moonshot/kimi-k2.6", "label": "Kimi K2.6  [moonshot.cn direct — needs MOONSHOT_API_KEY]"},
+    {"id": "moonshot/kimi-k2.6", "label": "Kimi K2.6 — moonshot.cn direct, needs MOONSHOT_API_KEY"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
 ]
 
