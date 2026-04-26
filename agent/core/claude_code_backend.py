@@ -181,10 +181,31 @@ def _make_can_use_tool(session: Session):
     return can_use_tool
 
 
+_EFFORT_MAP = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "max",  # SDK currently exposes max as the top tier
+    "max": "max",
+}
+
+
+def _claude_code_effort(session: Session) -> str | None:
+    """Map ml-intern's reasoning_effort onto Claude Agent SDK's effort literal."""
+    return _EFFORT_MAP.get(session.config.reasoning_effort or "")
+
+
+def _claude_code_thinking(effort: str | None) -> dict:
+    return {"type": "adaptive"} if effort else {"type": "disabled"}
+
+
 def _build_options(session: Session) -> ClaudeAgentOptions:
     mcp_server = _build_mcp_server(session)
 
     allowed = [_tool_prefix(name) for name in session.tool_router.tools.keys()]
+
+    effort = _claude_code_effort(session)
 
     return ClaudeAgentOptions(
         model=strip_prefix(session.config.model_name),
@@ -200,6 +221,8 @@ def _build_options(session: Session) -> ClaudeAgentOptions:
         max_turns=session.config.max_iterations
         if session.config.max_iterations > 0 else None,
         continue_conversation=False,  # we drive multi-turn via .query()
+        effort=effort,
+        thinking=_claude_code_thinking(effort),
     )
 
 
@@ -388,6 +411,7 @@ async def run_research_via_claude_code(
     mcp_server = _build_mcp_server(session, tool_names=allowed_tool_names)
     allowed = [_tool_prefix(n) for n in allowed_tool_names]
 
+    effort = _claude_code_effort(session)
     options = ClaudeAgentOptions(
         model=strip_prefix(session.config.model_name),
         system_prompt=system_prompt,
@@ -398,6 +422,8 @@ async def run_research_via_claude_code(
         setting_sources=[],
         max_turns=60,
         continue_conversation=False,
+        effort=effort,
+        thinking=_claude_code_thinking(effort),
     )
 
     client = ClaudeSDKClient(options=options)
