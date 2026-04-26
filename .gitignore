@@ -73,3 +73,6 @@ checkpoint-*/
 runs/
 wandb/
 frontend/tsconfig.tsbuildinfo
+
+# Serena MCP local project cache
+.serena/
