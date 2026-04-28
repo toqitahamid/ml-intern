@@ -8,11 +8,18 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
-from litellm import ChatCompletionMessageToolCall, Message, acompletion
+from litellm import (
+    ChatCompletionMessageToolCall,
+    Message,
+    acompletion,
+    stream_chunk_builder,
+)
 from litellm.exceptions import ContextWindowExceededError
 
 from agent.config import Config
+from agent.messaging.gateway import NotificationGateway
 from agent.core import telemetry
 from agent.core.doom_loop import check_for_doom_loop
 from agent.core.llm_params import _resolve_llm_params
@@ -396,12 +403,159 @@ class LLMResult:
     token_count: int
     finish_reason: str | None
     usage: dict = field(default_factory=dict)
+    thinking_blocks: list[dict[str, Any]] | None = None
+    reasoning_content: str | None = None
+
+
+def _extract_thinking_state(
+    message: Any,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Return provider reasoning fields that must be replayed after tool calls."""
+    provider_fields = getattr(message, "provider_specific_fields", None)
+    if not isinstance(provider_fields, dict):
+        provider_fields = {}
+
+    thinking_blocks = (
+        getattr(message, "thinking_blocks", None)
+        or provider_fields.get("thinking_blocks")
+        or None
+    )
+    reasoning_content = (
+        getattr(message, "reasoning_content", None)
+        or provider_fields.get("reasoning_content")
+        or None
+    )
+    return thinking_blocks, reasoning_content
+
+
+def _should_replay_thinking_state(model_name: str | None) -> bool:
+    """Only Anthropic's native adapter accepts replayed thinking metadata."""
+    return bool(model_name and model_name.startswith("anthropic/"))
+
+
+def _is_invalid_thinking_signature_error(exc: Exception) -> bool:
+    """Return True when Anthropic rejected replayed extended-thinking state."""
+    text = str(exc)
+    return (
+        "Invalid `signature` in `thinking` block" in text
+        or "Invalid signature in thinking block" in text
+    )
+
+
+def _strip_thinking_state_from_messages(messages: list[Any]) -> int:
+    """Remove replayed thinking metadata from assistant history messages."""
+    stripped = 0
+
+    for message in messages:
+        role = (
+            message.get("role")
+            if isinstance(message, dict)
+            else getattr(message, "role", None)
+        )
+        if role != "assistant":
+            continue
+
+        if isinstance(message, dict):
+            if message.pop("thinking_blocks", None) is not None:
+                stripped += 1
+            if message.pop("reasoning_content", None) is not None:
+                stripped += 1
+            provider_fields = message.get("provider_specific_fields")
+            content = message.get("content")
+        else:
+            if getattr(message, "thinking_blocks", None) is not None:
+                message.thinking_blocks = None
+                stripped += 1
+            if getattr(message, "reasoning_content", None) is not None:
+                message.reasoning_content = None
+                stripped += 1
+            provider_fields = getattr(message, "provider_specific_fields", None)
+            content = getattr(message, "content", None)
+
+        if isinstance(provider_fields, dict):
+            cleaned_fields = dict(provider_fields)
+            if cleaned_fields.pop("thinking_blocks", None) is not None:
+                stripped += 1
+            if cleaned_fields.pop("reasoning_content", None) is not None:
+                stripped += 1
+            if cleaned_fields != provider_fields:
+                if isinstance(message, dict):
+                    message["provider_specific_fields"] = cleaned_fields
+                else:
+                    message.provider_specific_fields = cleaned_fields
+
+        if isinstance(content, list):
+            cleaned_content = [
+                block
+                for block in content
+                if not (
+                    isinstance(block, dict)
+                    and block.get("type") in {"thinking", "redacted_thinking"}
+                )
+            ]
+            if len(cleaned_content) != len(content):
+                stripped += len(content) - len(cleaned_content)
+                if isinstance(message, dict):
+                    message["content"] = cleaned_content
+                else:
+                    message.content = cleaned_content
+
+    return stripped
+
+
+async def _maybe_heal_invalid_thinking_signature(
+    session: Session,
+    messages: list[Any],
+    exc: Exception,
+    *,
+    already_healed: bool,
+) -> bool:
+    if already_healed or not _is_invalid_thinking_signature_error(exc):
+        return False
+
+    stripped = _strip_thinking_state_from_messages(messages)
+    if not stripped:
+        return False
+
+    await session.send_event(Event(
+        event_type="tool_log",
+        data={
+            "tool": "system",
+            "log": (
+                "Anthropic rejected stale thinking signatures; retrying "
+                "without replayed thinking metadata."
+            ),
+        },
+    ))
+    return True
+
+
+def _assistant_message_from_result(
+    llm_result: LLMResult,
+    *,
+    model_name: str | None,
+    tool_calls: list[ToolCall] | None = None,
+) -> Message:
+    """Build an assistant history message without dropping reasoning state."""
+    kwargs: dict[str, Any] = {
+        "role": "assistant",
+        "content": llm_result.content,
+    }
+    if tool_calls is not None:
+        kwargs["tool_calls"] = tool_calls
+    if _should_replay_thinking_state(model_name):
+        if llm_result.thinking_blocks:
+            kwargs["thinking_blocks"] = llm_result.thinking_blocks
+        if llm_result.reasoning_content:
+            kwargs["reasoning_content"] = llm_result.reasoning_content
+    return Message(**kwargs)
 
 
 async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> LLMResult:
     """Call the LLM with streaming, emitting assistant_chunk events."""
     response = None
     _healed_effort = False  # one-shot safety net per call
+    _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
@@ -429,6 +583,14 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
+            if await _maybe_heal_invalid_thinking_signature(
+                session,
+                messages,
+                e,
+                already_healed=_healed_thinking_signature,
+            ):
+                _healed_thinking_signature = True
+                continue
             _delay = _retry_delay_for(e, _llm_attempt)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
@@ -448,8 +610,11 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
     token_count = 0
     finish_reason = None
     final_usage_chunk = None
+    chunks = []
+    should_replay_thinking = _should_replay_thinking_state(llm_params.get("model"))
 
     async for chunk in response:
+        chunks.append(chunk)
         if session.is_cancelled:
             tool_calls_acc.clear()
             break
@@ -498,6 +663,16 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         latency_ms=int((time.monotonic() - t_start) * 1000),
         finish_reason=finish_reason,
     )
+    thinking_blocks = None
+    reasoning_content = None
+    if chunks and should_replay_thinking:
+        try:
+            rebuilt = stream_chunk_builder(chunks, messages=messages)
+            if rebuilt and getattr(rebuilt, "choices", None):
+                rebuilt_msg = rebuilt.choices[0].message
+                thinking_blocks, reasoning_content = _extract_thinking_state(rebuilt_msg)
+        except Exception:
+            logger.debug("Failed to rebuild streaming thinking state", exc_info=True)
 
     return LLMResult(
         content=full_content or None,
@@ -505,6 +680,8 @@ async def _call_llm_streaming(session: Session, messages, tools, llm_params) -> 
         token_count=token_count,
         finish_reason=finish_reason,
         usage=usage,
+        thinking_blocks=thinking_blocks,
+        reasoning_content=reasoning_content,
     )
 
 
@@ -512,6 +689,7 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     """Call the LLM without streaming, emit assistant_message at the end."""
     response = None
     _healed_effort = False
+    _healed_thinking_signature = False
     messages, tools = with_prompt_caching(messages, tools, llm_params.get("model"))
     t_start = time.monotonic()
     for _llm_attempt in range(_MAX_LLM_RETRIES):
@@ -538,6 +716,14 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
                     data={"tool": "system", "log": "Reasoning effort not supported for this model — adjusting and retrying."},
                 ))
                 continue
+            if await _maybe_heal_invalid_thinking_signature(
+                session,
+                messages,
+                e,
+                already_healed=_healed_thinking_signature,
+            ):
+                _healed_thinking_signature = True
+                continue
             _delay = _retry_delay_for(e, _llm_attempt)
             if _llm_attempt < _MAX_LLM_RETRIES - 1 and _delay is not None:
                 logger.warning(
@@ -557,6 +743,7 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
     content = message.content or None
     finish_reason = choice.finish_reason
     token_count = response.usage.total_tokens if response.usage else 0
+    thinking_blocks, reasoning_content = _extract_thinking_state(message)
 
     # Build tool_calls_acc in the same format as streaming
     tool_calls_acc: dict[int, dict] = {}
@@ -591,6 +778,8 @@ async def _call_llm_non_streaming(session: Session, messages, tools, llm_params)
         token_count=token_count,
         finish_reason=finish_reason,
         usage=usage,
+        thinking_blocks=thinking_blocks,
+        reasoning_content=reasoning_content,
     )
 
 
@@ -696,15 +885,6 @@ class Handlers:
                 session.context_manager.add_message(
                     Message(role="user", content=doom_prompt)
                 )
-                await session.send_event(
-                    Event(
-                        event_type="tool_log",
-                        data={
-                            "tool": "system",
-                            "log": "Doom loop detected — injecting corrective prompt",
-                        },
-                    )
-                )
 
             malformed_tool = _detect_repeated_malformed(session.context_manager.items)
             if malformed_tool:
@@ -778,7 +958,10 @@ class Handlers:
                         "  • For other tools: reduce the size of your arguments or use bash."
                     )
                     if content:
-                        assistant_msg = Message(role="assistant", content=content)
+                        assistant_msg = _assistant_message_from_result(
+                            llm_result,
+                            model_name=llm_params.get("model"),
+                        )
                         session.context_manager.add_message(assistant_msg, token_count)
                     session.context_manager.add_message(
                         Message(role="user", content=f"[SYSTEM: {truncation_hint}]")
@@ -834,7 +1017,10 @@ class Handlers:
                         (content or "")[:500],
                     )
                     if content:
-                        assistant_msg = Message(role="assistant", content=content)
+                        assistant_msg = _assistant_message_from_result(
+                            llm_result,
+                            model_name=llm_params.get("model"),
+                        )
                         session.context_manager.add_message(assistant_msg, token_count)
                         final_response = content
                     break
@@ -856,9 +1042,9 @@ class Handlers:
                         bad_tools.append(tc)
 
                 # Add assistant message with all tool calls to context
-                assistant_msg = Message(
-                    role="assistant",
-                    content=content,
+                assistant_msg = _assistant_message_from_result(
+                    llm_result,
+                    model_name=llm_params.get("model"),
                     tool_calls=tool_calls,
                 )
                 session.context_manager.add_message(assistant_msg, token_count)
@@ -1064,7 +1250,12 @@ class Handlers:
             await session.send_event(
                 Event(
                     event_type="turn_complete",
-                    data={"history_size": len(session.context_manager.items)},
+                    data={
+                        "history_size": len(session.context_manager.items),
+                        "final_response": final_response
+                        if isinstance(final_response, str)
+                        else None,
+                    },
                 )
             )
 
@@ -1165,6 +1356,9 @@ class Handlers:
                     tool_args["script"] = edited_script
                     was_edited = True
                     logger.info(f"Using user-edited script for {tool_name} ({tc.id})")
+                selected_namespace = approval_decision.get("namespace")
+                if selected_namespace and tool_name == "hf_jobs":
+                    tool_args["namespace"] = selected_namespace
                 approved_tasks.append((tc, tool_name, tool_args, was_edited))
             else:
                 rejected_tasks.append((tc, tool_name, approval_decision))
@@ -1388,12 +1582,16 @@ async def process_submission(session: Session, submission) -> bool:
 async def submission_loop(
     submission_queue: asyncio.Queue,
     event_queue: asyncio.Queue,
-    config: Config | None = None,
+    config: Config,
     tool_router: ToolRouter | None = None,
     session_holder: list | None = None,
     hf_token: str | None = None,
+    user_id: str | None = None,
     local_mode: bool = False,
     stream: bool = True,
+    notification_gateway: NotificationGateway | None = None,
+    notification_destinations: list[str] | None = None,
+    defer_turn_complete_notification: bool = False,
 ) -> None:
     """
     Main agent loop - processes submissions and dispatches to handlers.
@@ -1403,7 +1601,10 @@ async def submission_loop(
     # Create session with tool router
     session = Session(
         event_queue, config=config, tool_router=tool_router, hf_token=hf_token,
-        local_mode=local_mode, stream=stream,
+        user_id=user_id, local_mode=local_mode, stream=stream,
+        notification_gateway=notification_gateway,
+        notification_destinations=notification_destinations,
+        defer_turn_complete_notification=defer_turn_complete_notification,
     )
     if session_holder is not None:
         session_holder[0] = session

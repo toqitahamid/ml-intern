@@ -226,11 +226,16 @@ function createEventToChunkStream(sideChannel: SideChannelCallbacks): TransformS
           const state = (event.data?.state as string) || '';
           const toolName = (event.data?.tool as string) || '';
           const jobUrl = (event.data?.jobUrl as string) || undefined;
+          const trackioSpaceId = (event.data?.trackioSpaceId as string) || undefined;
+          const trackioProject = (event.data?.trackioProject as string) || undefined;
 
           if (tcId.startsWith('plan_tool')) break;
 
           if (jobUrl && tcId) {
             useAgentStore.getState().setJobUrl(tcId, jobUrl);
+          }
+          if (trackioSpaceId && tcId) {
+            useAgentStore.getState().setTrackioDashboard(tcId, trackioSpaceId, trackioProject);
           }
           if (state === 'running' && toolName) {
             sideChannel.onToolRunning(toolName);
@@ -320,11 +325,20 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
         const approved = p.approval?.approved ?? true;
         // Get edited script from agentStore if available
         const editedScript = useAgentStore.getState().getEditedScript(p.toolCallId);
+        const explicitNamespace = useAgentStore.getState().getApprovalNamespace(p.toolCallId);
+        // Fall back to the user's persisted choice so we don't re-prompt
+        // every hf_jobs call.  Backend will 400 if the saved namespace is
+        // no longer valid; the error handler clears the preference and
+        // reopens the picker.
+        const preferred = useAgentStore.getState().preferredJobsNamespace;
+        const namespace = explicitNamespace
+          ?? (approved && p.toolName === 'hf_jobs' ? preferred ?? null : null);
         return {
           tool_call_id: p.toolCallId,
           approved,
           feedback: approved ? null : (p.approval?.reason || 'Rejected by user'),
           edited_script: editedScript ?? null,
+          namespace: namespace ?? null,
         };
       }).filter(Boolean);
       body = { approvals };
@@ -361,6 +375,44 @@ export class SSEChatTransport implements ChatTransport<UIMessage> {
       // for useAgentChat's onError handler, which surfaces the cap dialog
       // instead of a generic error banner.
       throw new Error('CLAUDE_QUOTA_EXHAUSTED');
+    }
+    if (response.status === 402) {
+      const payload = await response.json().catch(() => null);
+      if (payload?.detail?.error === 'hf_jobs_upgrade_required') {
+        const err = new Error('HF_JOBS_UPGRADE_REQUIRED') as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<Record<string, unknown>>;
+        };
+        err.detail = payload.detail as Record<string, unknown>;
+        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
+        throw err;
+      }
+    }
+    if (response.status === 409) {
+      const payload = await response.json().catch(() => null);
+      if (payload?.detail?.error === 'hf_jobs_namespace_required') {
+        const err = new Error('HF_JOBS_NAMESPACE_REQUIRED') as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<Record<string, unknown>>;
+        };
+        err.detail = payload.detail as Record<string, unknown>;
+        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
+        throw err;
+      }
+    }
+    if (response.status === 400) {
+      const payload = await response.json().catch(() => null);
+      if (payload?.detail?.error === 'hf_jobs_invalid_namespace') {
+        // Stored namespace is no longer eligible — surface so the UI can
+        // clear the saved preference and reopen the picker.
+        const err = new Error('HF_JOBS_INVALID_NAMESPACE') as Error & {
+          detail?: Record<string, unknown>;
+          approvals?: Array<Record<string, unknown>>;
+        };
+        err.detail = payload.detail as Record<string, unknown>;
+        err.approvals = (body.approvals as Array<Record<string, unknown>> | undefined) || [];
+        throw err;
+      }
     }
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Request failed');
