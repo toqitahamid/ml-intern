@@ -65,6 +65,70 @@ MAX_TIMEOUT = 1200
 WAIT_TIMEOUT = 600
 WAIT_INTERVAL = 5
 API_WAIT_TIMEOUT = 180
+HARDWARE_REQUEST_TIMEOUT = 60
+CPU_BASIC_HARDWARE = "cpu-basic"
+
+
+def _is_transient_space_visibility_error(error: Exception) -> bool:
+    """Return True when a newly duplicated Space is not queryable yet."""
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) == 404:
+        return True
+    message = str(error)
+    return "Repository Not Found" in message or "404 Client Error" in message
+
+
+def _is_transient_space_management_error(error: Exception) -> bool:
+    """Return True when a just-created private Space is not manageable yet."""
+    response = getattr(error, "response", None)
+    if getattr(response, "status_code", None) in {401, 404}:
+        return True
+    message = str(error)
+    return (
+        "Repository Not Found" in message
+        or "401 Client Error" in message
+        or "404 Client Error" in message
+    )
+
+
+def _request_space_hardware_with_retry(
+    api: HfApi,
+    space_id: str,
+    *,
+    hardware: str,
+    sleep_time: int | None,
+    log: Callable[[str], object],
+    check_cancel: Callable[[], object],
+) -> None:
+    """Request hardware, retrying while Hub permissions propagate for a new Space."""
+    deadline = time.time() + HARDWARE_REQUEST_TIMEOUT
+    attempt = 0
+    while True:
+        check_cancel()
+        try:
+            api.request_space_hardware(
+                space_id,
+                hardware=hardware,
+                sleep_time=sleep_time,
+            )
+            return
+        except Exception as e:
+            if not _is_transient_space_management_error(e):
+                raise
+
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise
+
+            attempt += 1
+            status_code = getattr(getattr(e, "response", None), "status_code", None)
+            status = f"HTTP {status_code}" if status_code else type(e).__name__
+            log(
+                f"  Hardware request not accepted yet ({status}); "
+                f"retrying ({attempt})..."
+            )
+            time.sleep(min(WAIT_INTERVAL, remaining))
+
 
 _DOCKERFILE = """\
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -549,7 +613,7 @@ class Sandbox:
         *,
         name: str | None = None,
         template: str = TEMPLATE_SPACE,
-        hardware: str = "cpu-basic",
+        hardware: str = CPU_BASIC_HARDWARE,
         private: bool = True,
         sleep_time: int | None = None,
         token: str | None = None,
@@ -615,6 +679,25 @@ class Sandbox:
 
         _check_cancel()
 
+        # ``duplicate_space`` already receives the target hardware. The extra
+        # /hardware call is useful for paid tiers, but hosted OAuth tokens can
+        # 401 on that endpoint for a fresh private Space even after duplication
+        # succeeds. Avoid the redundant call for default CPU sandboxes when no
+        # auto-sleep timer is requested; with sleep_time set, the hardware
+        # endpoint is still needed to configure auto-sleep.
+        if hardware == CPU_BASIC_HARDWARE and sleep_time is None:
+            _log(f"Using duplicated Space hardware: {hardware}")
+        else:
+            _request_space_hardware_with_retry(
+                api,
+                space_id,
+                hardware=hardware,
+                sleep_time=sleep_time,
+                log=_log,
+                check_cancel=_check_cancel,
+            )
+            _log(f"Requested hardware: {hardware}")
+
         # Inject secrets BEFORE uploading server files (which triggers rebuild).
         # Secrets added after a Space is running aren't available until restart,
         # so they must be set before the build/start cycle.
@@ -633,8 +716,22 @@ class Sandbox:
         deadline = time.time() + wait_timeout
         while time.time() < deadline:
             _check_cancel()
-            runtime = api.get_space_runtime(space_id)
+            try:
+                runtime = api.get_space_runtime(space_id)
+            except Exception as e:
+                if _is_transient_space_visibility_error(e):
+                    _log("  Space runtime not visible yet...")
+                    time.sleep(WAIT_INTERVAL)
+                    continue
+                raise
             if runtime.stage == "RUNNING":
+                current_hardware = runtime.hardware or getattr(
+                    runtime, "requested_hardware", None
+                )
+                if current_hardware != hardware:
+                    _log(f"  RUNNING on {current_hardware}; waiting for {hardware}...")
+                    time.sleep(WAIT_INTERVAL)
+                    continue
                 _log(f"Space is running (hardware: {runtime.hardware})")
                 break
             if runtime.stage in ("RUNTIME_ERROR", "BUILD_ERROR"):
@@ -668,7 +765,9 @@ class Sandbox:
         return sb
 
     @staticmethod
-    def _setup_server(space_id: str, api: HfApi, *, log: Callable[[str], object] = print) -> None:
+    def _setup_server(
+        space_id: str, api: HfApi, *, log: Callable[[str], object] = print
+    ) -> None:
         """Upload embedded sandbox server + Dockerfile to the Space (single commit)."""
         log(f"Uploading sandbox server to {space_id}...")
         api.create_commit(
@@ -710,7 +809,9 @@ class Sandbox:
         sb._wait_for_api(timeout=60)
         return sb
 
-    def _wait_for_api(self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print):
+    def _wait_for_api(
+        self, timeout: int = API_WAIT_TIMEOUT, log: Callable[[str], object] = print
+    ):
         """Poll the health endpoint until the server responds."""
         deadline = time.time() + timeout
         last_err = None
@@ -887,7 +988,12 @@ class Sandbox:
         return result
 
     def edit(
-        self, path: str, old_str: str, new_str: str, *, replace_all: bool = False,
+        self,
+        path: str,
+        old_str: str,
+        new_str: str,
+        *,
+        replace_all: bool = False,
         mode: str = "replace",
     ) -> ToolResult:
         if old_str == new_str:

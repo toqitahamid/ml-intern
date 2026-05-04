@@ -28,11 +28,23 @@ SUGGESTED_MODELS = [
     {"id": "openai/gpt-5.4", "label": "GPT-5.4"},
     {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
     {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
-    {"id": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6 via Bedrock"},
-    {"id": "claude-code/sonnet", "label": "Claude Sonnet (via Claude Max subscription)"},
-    {"id": "claude-code/opus", "label": "Claude Opus (via Claude Max subscription)"},
+    {
+        "id": "bedrock/us.anthropic.claude-opus-4-6-v1",
+        "label": "Claude Opus 4.6 via Bedrock",
+    },
+    {
+        "id": "claude-code/sonnet",
+        "label": "Claude Sonnet (via Claude Max subscription)",
+    },
+    {
+        "id": "claude-code/opus",
+        "label": "Claude Opus (via Claude Max subscription)",
+    },
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
-    {"id": "moonshot/kimi-k2.6", "label": "Kimi K2.6 — moonshot.cn direct, needs MOONSHOT_API_KEY"},
+    {
+        "id": "moonshot/kimi-k2.6",
+        "label": "Kimi K2.6 — moonshot.cn direct, needs MOONSHOT_API_KEY",
+    },
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
     {"id": "deepseek-ai/DeepSeek-V4-Pro:deepinfra", "label": "DeepSeek V4 Pro"},
 ]
@@ -130,9 +142,7 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
         )
         ctx = f"{p.context_length:,} ctx" if p.context_length else "ctx n/a"
         tools = "tools" if p.supports_tools else "no tools"
-        console.print(
-            f"  [dim]{p.provider}: {price}, {ctx}, {tools}[/dim]"
-        )
+        console.print(f"  [dim]{p.provider}: {price}, {ctx}, {tools}[/dim]")
     return True
 
 
@@ -192,7 +202,9 @@ async def probe_and_switch_model(
         # Nothing to validate with a ping that we couldn't validate on the
         # first real call just as cheaply. Skip the probe entirely.
         _commit_switch(model_id, config, session, effective=None, cache=False)
-        console.print(f"[green]Model switched to {model_id}[/green] [dim](effort: off)[/dim]")
+        console.print(
+            f"[green]Model switched to {model_id}[/green] [dim](effort: off)[/dim]"
+        )
         return
 
     console.print(f"[dim]checking {model_id} (effort: {preference})...[/dim]")
@@ -212,8 +224,11 @@ async def probe_and_switch_model(
         return
 
     _commit_switch(
-        model_id, config, session,
-        effective=outcome.effective_effort, cache=True,
+        model_id,
+        config,
+        session,
+        effective=outcome.effective_effort,
+        cache=True,
     )
     effort_label = outcome.effective_effort or "off"
     suffix = f" — {outcome.note}" if outcome.note else ""

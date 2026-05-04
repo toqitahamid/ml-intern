@@ -1,5 +1,6 @@
 """Tests for gated model handling in backend/routes/agent.py."""
 
+import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,10 +34,93 @@ async def test_gated_model_gate_rejects_gpt55_for_non_hf_user(monkeypatch):
     async def fake_require_hf_org_member(_request):
         return False
 
-    monkeypatch.setattr(agent, "require_huggingface_org_member", fake_require_hf_org_member)
+    monkeypatch.setattr(
+        agent,
+        "require_huggingface_org_member",
+        fake_require_hf_org_member,
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await agent._require_hf_for_gated_model(None, "openai/gpt-5.5")
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["error"] == "premium_model_restricted"
+
+
+@pytest.mark.asyncio
+async def test_default_gated_session_falls_back_to_free_model_for_non_hf_user(
+    monkeypatch,
+):
+    async def fake_require_hf_org_member(_request):
+        return False
+
+    monkeypatch.setattr(
+        agent,
+        "require_huggingface_org_member",
+        fake_require_hf_org_member,
+    )
+    monkeypatch.setattr(
+        agent.session_manager.config,
+        "model_name",
+        agent.DEFAULT_CLAUDE_MODEL_ID,
+    )
+
+    model = await agent._model_override_for_new_session(None, None)
+
+    assert model == agent.DEFAULT_FREE_MODEL_ID
+
+
+@pytest.mark.asyncio
+async def test_default_gated_session_stays_default_for_hf_user(monkeypatch):
+    async def fake_require_hf_org_member(_request):
+        return True
+
+    monkeypatch.setattr(
+        agent,
+        "require_huggingface_org_member",
+        fake_require_hf_org_member,
+    )
+    monkeypatch.setattr(
+        agent.session_manager.config,
+        "model_name",
+        agent.DEFAULT_CLAUDE_MODEL_ID,
+    )
+
+    model = await agent._model_override_for_new_session(None, None)
+
+    assert model is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_gated_session_allowed_for_hf_user(monkeypatch):
+    async def fake_require_hf_org_member(_request):
+        return True
+
+    monkeypatch.setattr(
+        agent,
+        "require_huggingface_org_member",
+        fake_require_hf_org_member,
+    )
+
+    model = await agent._model_override_for_new_session(
+        None,
+        agent.DEFAULT_CLAUDE_MODEL_ID,
+    )
+
+    assert model == agent.DEFAULT_CLAUDE_MODEL_ID
+
+
+@pytest.mark.asyncio
+async def test_explicit_gated_session_request_still_rejects_non_hf_user(monkeypatch):
+    async def fake_require_hf_org_member(_request):
+        return False
+
+    monkeypatch.setattr(
+        agent, "require_huggingface_org_member", fake_require_hf_org_member
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await agent._model_override_for_new_session(None, agent.DEFAULT_CLAUDE_MODEL_ID)
 
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail["error"] == "premium_model_restricted"
@@ -127,3 +211,105 @@ async def test_user_quota_response_uses_premium_fields_only(monkeypatch):
         "premium_daily_cap": 5,
         "premium_remaining": 3,
     }
+
+
+@pytest.mark.asyncio
+async def test_set_session_yolo_calls_manager_with_cap_presence(monkeypatch):
+    async def fake_check_session_access(session_id, user, request=None):
+        assert session_id == "s1"
+        assert user["user_id"] == "u1"
+        return object()
+
+    calls = []
+
+    async def fake_update_session_auto_approval(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return {
+            "enabled": kwargs["enabled"],
+            "cost_cap_usd": 7.5,
+            "estimated_spend_usd": 0.0,
+            "remaining_usd": 7.5,
+        }
+
+    monkeypatch.setattr(agent, "_check_session_access", fake_check_session_access)
+    monkeypatch.setattr(
+        agent.session_manager,
+        "update_session_auto_approval",
+        fake_update_session_auto_approval,
+    )
+
+    response = await agent.set_session_yolo(
+        "s1",
+        agent.SessionYoloRequest(enabled=True, cost_cap_usd=7.5),
+        {"user_id": "u1"},
+    )
+
+    assert response["enabled"] is True
+    assert response["remaining_usd"] == 7.5
+    assert calls == [
+        (
+            "s1",
+            {
+                "enabled": True,
+                "cost_cap_usd": 7.5,
+                "cap_provided": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_session_access_check_skips_sandbox_preload(monkeypatch):
+    ensure_calls = []
+    delete_calls = []
+
+    async def fake_ensure_session_loaded(session_id, user_id, **kwargs):
+        ensure_calls.append((session_id, user_id, kwargs))
+        return SimpleNamespace(user_id=user_id)
+
+    async def fake_delete_session(session_id):
+        delete_calls.append(session_id)
+        return True
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "ensure_session_loaded",
+        fake_ensure_session_loaded,
+    )
+    monkeypatch.setattr(agent.session_manager, "delete_session", fake_delete_session)
+
+    response = await agent.delete_session("s1", {"user_id": "u1"})
+
+    assert response == {"status": "deleted", "session_id": "s1"}
+    assert delete_calls == ["s1"]
+    assert ensure_calls[0][2]["preload_sandbox"] is False
+
+
+@pytest.mark.asyncio
+async def test_teardown_session_access_check_skips_sandbox_preload(monkeypatch):
+    ensure_calls = []
+    teardown_calls = []
+
+    async def fake_ensure_session_loaded(session_id, user_id, **kwargs):
+        ensure_calls.append((session_id, user_id, kwargs))
+        return SimpleNamespace(user_id=user_id)
+
+    async def fake_teardown_sandbox(session_id):
+        teardown_calls.append(session_id)
+        return True
+
+    monkeypatch.setattr(
+        agent.session_manager,
+        "ensure_session_loaded",
+        fake_ensure_session_loaded,
+    )
+    monkeypatch.setattr(
+        agent.session_manager, "teardown_sandbox", fake_teardown_sandbox
+    )
+
+    response = await agent.teardown_session_sandbox("s1", {"user_id": "u1"})
+    await asyncio.sleep(0)
+
+    assert response == {"status": "teardown_requested", "session_id": "s1"}
+    assert teardown_calls == ["s1"]
+    assert ensure_calls[0][2]["preload_sandbox"] is False
