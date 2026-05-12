@@ -100,7 +100,7 @@ def test_subagent_display_does_not_spawn_background_redraw(monkeypatch):
 def test_cli_forwards_model_flag_to_interactive_main(monkeypatch):
     seen: dict[str, object] = {}
 
-    async def fake_main(*, model=None, sandbox_tools=False):
+    async def fake_main(*, model=None, backend=None, sandbox_tools=False):
         seen["model"] = model
         seen["sandbox_tools"] = sandbox_tools
 
@@ -116,7 +116,7 @@ def test_cli_forwards_model_flag_to_interactive_main(monkeypatch):
 def test_cli_forwards_sandbox_flag_to_interactive_main(monkeypatch):
     seen: dict[str, object] = {}
 
-    async def fake_main(*, model=None, sandbox_tools=False):
+    async def fake_main(*, model=None, backend=None, sandbox_tools=False):
         seen["model"] = model
         seen["sandbox_tools"] = sandbox_tools
 
@@ -137,6 +137,7 @@ def test_cli_forwards_sandbox_flag_to_headless_main(monkeypatch):
         model=None,
         max_iterations=None,
         stream=True,
+        backend=None,
         sandbox_tools=False,
     ):
         seen.update(
