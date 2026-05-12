@@ -12,10 +12,10 @@ from typing import Any, Optional
 
 from agent.config import load_config
 from agent.core.agent_loop import process_submission
-from agent.messaging.gateway import NotificationGateway
 from agent.core.session import Event, OpType, Session
 from agent.core.session_persistence import get_session_store
 from agent.core.tools import ToolRouter
+from agent.messaging.gateway import NotificationGateway
 
 # Get project root (parent of backend directory)
 PROJECT_ROOT = Path(__file__).parent.parent
