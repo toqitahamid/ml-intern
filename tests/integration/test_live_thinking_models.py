@@ -29,6 +29,7 @@ if env_file := os.environ.get("ML_INTERN_LIVE_ENV_FILE"):
 LIVE_TESTS_ENABLED = os.environ.get("ML_INTERN_LIVE_LLM_TESTS") == "1"
 OPUS_47_MODEL = "anthropic/claude-opus-4-7"
 LATEST_GPT_MODEL = "openai/gpt-5.2"
+KIMI_MODEL = "moonshot/kimi-k2.6"
 REPORT_RESULT_TOOL = [
     {
         "type": "function",
@@ -144,6 +145,40 @@ async def test_live_latest_gpt_does_not_replay_reasoning_metadata():
     replay = _assistant_message_from_result(
         result,
         model_name=LATEST_GPT_MODEL,
+    )
+
+    assert result.content or result.tool_calls_acc
+    assert getattr(replay, "thinking_blocks", None) is None
+    assert getattr(replay, "reasoning_content", None) is None
+
+
+@pytest.mark.asyncio
+async def test_live_moonshot_kimi_does_not_replay_reasoning_metadata():
+    _skip_without_live_flag()
+    _skip_without_env("MOONSHOT_API_KEY")
+
+    session = _session(KIMI_MODEL)
+    # Moonshot doesn't accept reasoning_effort; _resolve_llm_params ignores it.
+    llm_params = _resolve_llm_params(KIMI_MODEL)
+
+    result = await _call_llm_streaming(
+        session,
+        messages=[
+            Message(
+                role="user",
+                content="Call report_result with answer KIMI_OK.",
+            )
+        ],
+        tools=REPORT_RESULT_TOOL,
+        llm_params=llm_params,
+    )
+
+    # OpenAI-compatible replay path: any provider-side reasoning must be
+    # stripped before the next turn.
+    result.reasoning_content = result.reasoning_content or "synthetic-reasoning"
+    replay = _assistant_message_from_result(
+        result,
+        model_name=KIMI_MODEL,
     )
 
     assert result.content or result.tool_calls_acc
