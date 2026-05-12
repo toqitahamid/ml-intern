@@ -590,6 +590,10 @@ def test_append_published_issue_section_adds_local_link():
 async def test_async_main_fails_early_when_issue_publish_token_missing(monkeypatch):
     mod = _load()
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    # resolve_model imports agent.config, which calls load_dotenv() and would
+    # repopulate GITHUB_TOKEN from .env on developer machines. Stub it out.
+    monkeypatch.setattr(mod, "resolve_model", lambda *a, **k: "stub-model")
+    monkeypatch.setattr(mod, "resolve_hf_token", lambda *a, **k: None)
 
     def fail_collect(*_args, **_kwargs):
         raise AssertionError("collection should not run without a GitHub token")

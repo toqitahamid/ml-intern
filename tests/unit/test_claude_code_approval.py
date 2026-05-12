@@ -36,7 +36,9 @@ async def test_approval_event_uses_tools_key_matching_litellm_contract():
     session = _FakeSession(Config(model_name="claude-code/sonnet", yolo_mode=False))
     can_use_tool = _make_can_use_tool(session)
 
-    tool_input = {"name": "demo", "flavor": "cpu-basic"}
+    # Use a non-default GPU hardware so _base_needs_approval returns True;
+    # cpu-basic is auto-approved after #216.
+    tool_input = {"name": "demo", "hardware": "t4-small"}
 
     async def resolve_when_event_emitted() -> None:
         # Wait for the backend to emit approval_required and register the future.
