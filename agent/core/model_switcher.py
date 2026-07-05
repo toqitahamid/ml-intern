@@ -50,10 +50,15 @@ SUGGESTED_MODELS = [
     {"id": DEEPSEEK_V4_PRO_MODEL_ID, "label": "DeepSeek V4 Pro"},
     # Fork-local: direct-provider and Claude Max subscription entries.
     {"id": "openai/gpt-5.5", "label": "GPT-5.5 (OpenAI direct)"},
-    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7 (Anthropic direct)"},
+    {"id": "anthropic/claude-fable-5", "label": "Claude Fable 5 (Anthropic direct)"},
+    {"id": "anthropic/claude-opus-4-8", "label": "Claude Opus 4.8 (Anthropic direct)"},
     {
         "id": "bedrock/us.anthropic.claude-opus-4-6-v1",
         "label": "Claude Opus 4.6 via Bedrock",
+    },
+    {
+        "id": "claude-code/claude-fable-5",
+        "label": "Claude Fable 5 (via Claude Max subscription)",
     },
     {
         "id": "claude-code/sonnet",
@@ -64,8 +69,12 @@ SUGGESTED_MODELS = [
         "label": "Claude Opus (via Claude Max subscription)",
     },
     {
+        "id": "moonshot/kimi-k2.7-code",
+        "label": "Kimi K2.7 Code — Moonshot direct, needs MOONSHOT_API_KEY",
+    },
+    {
         "id": "moonshot/kimi-k2.6",
-        "label": "Kimi K2.6 — moonshot.cn direct, needs MOONSHOT_API_KEY",
+        "label": "Kimi K2.6 — Moonshot direct, needs MOONSHOT_API_KEY",
     },
 ]
 
