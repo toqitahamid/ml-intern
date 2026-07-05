@@ -495,6 +495,7 @@ async def test_headless_main_passes_user_plan_to_submission_loop(monkeypatch):
             messaging=SimpleNamespace(default_auto_destinations=lambda: []),
             tool_runtime="local",
             max_iterations=3,
+            backend="litellm",
         ),
     )
 

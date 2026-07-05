@@ -277,7 +277,7 @@ def _get_research_model(main_model: str) -> str:
     through litellm so they fall back to an HF-routed model. Everything else
     is normalized for the HF router.
     """
-    if main_model.startswith("anthropic/"):
+    if main_model.startswith("anthropic/") and ":" not in main_model:
         return "anthropic/claude-sonnet-4-6"
     if main_model.startswith("bedrock/") and "anthropic" in main_model:
         return "bedrock/us.anthropic.claude-sonnet-4-6"

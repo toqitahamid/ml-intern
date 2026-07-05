@@ -123,7 +123,9 @@ def _build_mcp_server(session: Session, tool_names: set[str] | None = None):
 
 def _make_can_use_tool(session: Session):
     """Build a `can_use_tool` callback that defers to ml-intern's approval logic."""
-    from agent.core.agent_loop import _needs_approval  # local import avoids cycle
+    from agent.core.agent_loop import (  # local import avoids cycle
+        _base_needs_approval as _needs_approval,
+    )
 
     async def can_use_tool(
         tool_name: str, tool_input: dict[str, Any], ctx: ToolPermissionContext

@@ -130,7 +130,11 @@ def _resolve_llm_params(
     if is_reserved_local_model_id(normalized_model):
         raise ValueError(f"Unsupported local model id: {normalized_model}")
 
-    if model_name.startswith("anthropic/"):
+    # Fork-local direct-provider routing. Upstream's HF Router ids can also
+    # start with "anthropic/" / "openai/" but always carry a ":provider" tag
+    # (e.g. "anthropic/claude-opus-4.8:fal-ai") — those fall through to the
+    # router branch below. Untagged ids go to the provider API directly.
+    if model_name.startswith("anthropic/") and ":" not in model_name:
         params: dict = {"model": model_name}
         if reasoning_effort:
             level = reasoning_effort
@@ -169,7 +173,7 @@ def _resolve_llm_params(
         # don't currently expose.
         return {"model": model_name}
 
-    if model_name.startswith("openai/"):
+    if model_name.startswith("openai/") and ":" not in model_name:
         params = {"model": model_name}
         if reasoning_effort:
             if reasoning_effort not in _OPENAI_EFFORTS:
