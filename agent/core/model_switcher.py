@@ -26,18 +26,31 @@ from agent.core.local_models import (
     is_local_model_id,
     is_reserved_local_model_id,
 )
+from agent.core.model_ids import (
+    CLAUDE_OPUS_48_MODEL_ID,
+    DEEPSEEK_V4_PRO_MODEL_ID,
+    GLM_52_MODEL_ID,
+    GPT_55_MODEL_ID,
+    KIMI_K27_CODE_MODEL_ID,
+    MINIMAX_M3_MODEL_ID,
+    strip_huggingface_model_prefix,
+)
 
 
 # Suggested models shown by `/model` (not a gate). Users can paste any HF
-# model id (e.g. "MiniMaxAI/MiniMax-M2.7") or an `anthropic/` / `openai/`
-# prefix for direct API access. For HF ids, append ":fastest" /
-# ":cheapest" / ":preferred" / ":<provider>" to override the default
-# routing policy (auto = fastest with failover).
+# Router model id (e.g. "MiniMaxAI/MiniMax-M3:novita"). Append ":fastest",
+# ":cheapest", ":preferred", or ":<provider>" to override the default routing
+# policy (auto = fastest with failover).
 SUGGESTED_MODELS = [
-    {"id": "openai/gpt-5.5", "label": "GPT-5.5"},
-    {"id": "openai/gpt-5.4", "label": "GPT-5.4"},
-    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7"},
-    {"id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6"},
+    {"id": CLAUDE_OPUS_48_MODEL_ID, "label": "Claude Opus 4.8"},
+    {"id": GPT_55_MODEL_ID, "label": "GPT-5.5"},
+    {"id": MINIMAX_M3_MODEL_ID, "label": "MiniMax M3"},
+    {"id": KIMI_K27_CODE_MODEL_ID, "label": "Kimi K2.7 Code"},
+    {"id": GLM_52_MODEL_ID, "label": "GLM 5.2"},
+    {"id": DEEPSEEK_V4_PRO_MODEL_ID, "label": "DeepSeek V4 Pro"},
+    # Fork-local: direct-provider and Claude Max subscription entries.
+    {"id": "openai/gpt-5.5", "label": "GPT-5.5 (OpenAI direct)"},
+    {"id": "anthropic/claude-opus-4-7", "label": "Claude Opus 4.7 (Anthropic direct)"},
     {
         "id": "bedrock/us.anthropic.claude-opus-4-6-v1",
         "label": "Claude Opus 4.6 via Bedrock",
@@ -50,13 +63,10 @@ SUGGESTED_MODELS = [
         "id": "claude-code/opus",
         "label": "Claude Opus (via Claude Max subscription)",
     },
-    {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
     {
         "id": "moonshot/kimi-k2.6",
         "label": "Kimi K2.6 — moonshot.cn direct, needs MOONSHOT_API_KEY",
     },
-    {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
-    {"id": "deepseek-ai/DeepSeek-V4-Pro:deepinfra", "label": "DeepSeek V4 Pro"},
 ]
 
 
@@ -76,26 +86,25 @@ def is_valid_model_id(model_id: str) -> bool:
     """Loose format check — lets users pick any model id.
 
     Accepts:
-      • anthropic/<model>
-      • openai/<model>
       • ollama/<model>, vllm/<model>, lm_studio/<model>, llamacpp/<model>
       • <org>/<model>[:<tag>]            (HF router; tag = provider or policy)
-      • huggingface/<org>/<model>[:<tag>] (same, accepts legacy prefix)
+      • huggingface/<org>/<model>[:<tag>] (same, optional LiteLLM prefix)
 
     Actual availability is verified against the HF router catalog on
     switch, and by the provider on the probe's ping call.
     """
     if not model_id:
         return False
-    if is_local_model_id(model_id):
+    normalized_model_id = strip_huggingface_model_prefix(model_id) or model_id
+    if is_local_model_id(normalized_model_id):
         return True
-    if is_reserved_local_model_id(model_id):
+    if is_reserved_local_model_id(normalized_model_id):
         return False
-    if any(model_id.startswith(prefix) for prefix in LOCAL_MODEL_PREFIXES):
+    if any(normalized_model_id.startswith(prefix) for prefix in LOCAL_MODEL_PREFIXES):
         return False
-    if "/" not in model_id:
+    if "/" not in normalized_model_id:
         return False
-    head = model_id.split(":", 1)[0]
+    head = normalized_model_id.split(":", 1)[0]
     parts = head.split("/")
     return len(parts) >= 2 and all(parts)
 
@@ -106,9 +115,13 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     proceed with the switch, ``False`` to indicate a hard problem the user
     should notice before we fire the effort probe.
 
-    Anthropic / OpenAI ids return ``True`` without printing anything —
-    the probe below covers "does this model exist".
+    Local ids return ``True`` without printing anything. Router ids are checked
+    against the router catalog when possible; the probe below covers provider
+    availability for uncataloged ids.
     """
+    if is_local_model_id(model_id):
+        return True
+
     if model_id.startswith(_DIRECT_PREFIXES):
         return True
 
@@ -178,7 +191,7 @@ def print_model_listing(config, console) -> None:
         marker = " [dim]<-- current[/dim]" if m["id"] == current else ""
         console.print(f"  {m['id']}  [dim]({m['label']})[/dim]{marker}")
     console.print(
-        "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M2.7').\n"
+        "\n[dim]Paste any HF model id (e.g. 'MiniMaxAI/MiniMax-M3:novita').\n"
         "Add ':fastest', ':cheapest', ':preferred', or ':<provider>' to override routing.\n"
         "Use 'anthropic/<model>', 'openai/<model>', or 'moonshot/<model>' for direct API access.\n"
         "Moonshot direct API needs MOONSHOT_API_KEY (and optional MOONSHOT_API_BASE for the cn endpoint).\n"
@@ -192,8 +205,6 @@ def print_invalid_id(arg: str, console) -> None:
     console.print(
         "[dim]Expected:\n"
         "  • <org>/<model>[:tag]    (HF router — paste from huggingface.co)\n"
-        "  • anthropic/<model>\n"
-        "  • openai/<model>\n"
         "  • ollama/<model> | vllm/<model> | lm_studio/<model> | llamacpp/<model>[/dim]"
     )
 
